@@ -6,8 +6,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
 import time
 import threading
+import pdb
 
 from six.moves import queue
 
@@ -17,9 +19,10 @@ from ray.rllib.utils.actors import TaskPool
 from ray.rllib.utils.timer import TimerStat
 from ray.rllib.utils.window_stat import WindowStat
 
+import IPython as ip
+
 SAMPLE_QUEUE_DEPTH = 2
 LEARNER_QUEUE_MAX_SIZE = 16
-
 
 class LearnerThread(threading.Thread):
     """Background thread that updates the local model from sample trajectories.
@@ -113,6 +116,8 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         self.num_steps_trained += train_timesteps
 
     def _step(self):
+#        pdb.set_trace()
+        sys.exit(0)
         sample_timesteps, train_timesteps = 0, 0
         weights = None
 
