@@ -165,7 +165,7 @@ class _TFLogger(Logger):
         global_values = []
         for attr, value in result.items():
             if value is not None:
-                if type(value) is LoggerStat:
+                if isinstance(value, LoggerStat):
                     if value.plot_type == LINE:
                         values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value.value))
                     elif value.plot_type == HISTO:
@@ -174,10 +174,12 @@ class _TFLogger(Logger):
                         tag = "/".join(path + [attr])
                         self._global_histograms[tag].append(value.value)
                         global_values.append(tf.Summary.Value(tag=tag, histo=build_histogram(np.array(self._global_histograms[tag]))))                          
-                elif type(value) is dict:
+                elif isinstance(value, dict):
                     v, gv = self.to_tf_values(value, path + [attr])
                     values.extend(v)
                     global_values.extend(gv)
+                elif isinstance(value, (int, float, np.float32, np.float64, np.int32)): #TODO: Refactor codebase to not need this fallback
+                    values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value))
         return values, global_values
 
     def on_result(self, result):
@@ -239,9 +241,17 @@ class _SafeFallbackEncoder(json.JSONEncoder):
         except Exception:
             return str(value)  # give up, just stringify it (ok for logs)
 
+def unpack_result_dict(result):
+    """Unpack any LoggerStat objects in the result dict."""
+    if not isinstance(result, (dict, LoggerStat)):
+        return result
+    elif isinstance(result, LoggerStat):
+        return result.value
+    else:
+        return {key: unpack_result_dict(val) for key, val in result.items()}
 
 def pretty_print(result):
-    result = result.copy()
+    result = unpack_result_dict(result.copy())
     result.update(config=None)  # drop config from pretty print
     out = {}
     for k, v in result.items():

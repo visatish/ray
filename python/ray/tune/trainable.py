@@ -189,8 +189,6 @@ class Trainable(object):
             timesteps_since_restore=self._timesteps_since_restore,
             iterations_since_restore=self._iterations_since_restore)
 
-        result = unpack_result_dict(result) # unpack any LoggerStat objects so the raw result can be logger/printed
-
         self._result_logger.on_result(result)
 
         return result
