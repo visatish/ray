@@ -7,10 +7,13 @@ import json
 import numpy as np
 import os
 import yaml
+from collections import defaultdict
 
 from ray.tune.log_sync import get_syncer
 from ray.tune.result import NODE_IP, TRAINING_ITERATION, TIME_TOTAL_S, \
     TIMESTEPS_TOTAL
+
+import IPython as ip
 
 try:
     import tensorflow as tf
@@ -18,6 +21,25 @@ except ImportError:
     tf = None
     print("Couldn't import TensorFlow - this disables TensorBoard logging.")
 
+LINE = "line"
+HISTO = "histo"
+GLOBAL_HISTO = "global_histo"
+
+class LoggerStat(object):
+    """Wrapper class for metric stats to be logged"""
+
+    def __init__(self, value, plot_type=LINE):
+        self._value = value
+        self._plot_type = plot_type
+        assert self._plot_type in [LINE, HISTO, GLOBAL_HISTO], "Plot type '{}' not recognized".format(self._plot_type)
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def plot_type(self):
+        return self._plot_type
 
 class Logger(object):
     """Logging interface for ray.tune; specialized implementations follow.
@@ -87,7 +109,6 @@ class NoopLogger(Logger):
     def on_result(self, result):
         pass
 
-
 class _JsonLogger(Logger):
     def _init(self):
         config_out = os.path.join(self.logdir, "params.json")
@@ -107,23 +128,57 @@ class _JsonLogger(Logger):
     def close(self):
         self.local_out.close()
 
+def build_histogram(values, bins=1000):
+    # Taken from https://gist.github.com/gyglim/1f8dfb1b5c82627ae3efcfbbadb9f514
 
-def to_tf_values(result, path):
-    values = []
-    for attr, value in result.items():
-        if value is not None:
-            if type(value) in [int, float, np.float32, np.float64, np.int32]:
-                values.append(
-                    tf.Summary.Value(
-                        tag="/".join(path + [attr]), simple_value=value))
-            elif type(value) is dict:
-                values.extend(to_tf_values(value, path + [attr]))
-    return values
+    # Create histogram using numpy        
+    counts, bin_edges = np.histogram(values, bins=bins)
 
+    # Fill fields of histogram proto
+    hist = tf.HistogramProto()
+    hist.min = float(np.min(values))
+    hist.max = float(np.max(values))
+    hist.num = int(np.prod(values.shape))
+    hist.sum = float(np.sum(values))
+    hist.sum_squares = float(np.sum(values**2))
+
+    # Requires equal number as bins, where the first goes from -DBL_MAX to bin_edges[1]
+    # See https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/summary.proto#L30
+    # Thus, we drop the start of the first bin
+    bin_edges = bin_edges[1:]
+
+    # Add bin edges and counts
+    for edge in bin_edges:
+        hist.bucket_limit.append(edge)
+    for c in counts:
+        hist.bucket.append(c)
+
+    return hist
 
 class _TFLogger(Logger):
     def _init(self):
         self._file_writer = tf.summary.FileWriter(self.logdir)
+        self._global_histograms = defaultdict(list)
+
+    def to_tf_values(self, result, path):
+        values = []
+        global_values = []
+        for attr, value in result.items():
+            if value is not None:
+                if type(value) is LoggerStat:
+                    if value.plot_type == LINE:
+                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value.value))
+                    elif value.plot_type == HISTO:
+                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), histo=build_histogram(np.array(value.value))))
+                    elif value.plot_type == GLOBAL_HISTO: 
+                        tag = "/".join(path + [attr])
+                        self._global_histograms[tag].append(value.value)
+                        global_values.append(tf.Summary.Value(tag=tag, histo=build_histogram(np.array(self._global_histograms[tag]))))                          
+                elif type(value) is dict:
+                    v, gv = self.to_tf_values(value, path + [attr])
+                    values.extend(v)
+                    global_values.extend(gv)
+        return values, global_values
 
     def on_result(self, result):
         tmp = result.copy()
@@ -131,13 +186,15 @@ class _TFLogger(Logger):
                 "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             del tmp[k]  # not useful to tf log these
-        values = to_tf_values(tmp, ["ray", "tune"])
+        values, global_values = self.to_tf_values(tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
+        train_stats_global = tf.Summary(value=global_values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        iteration_value = to_tf_values({
+        self._file_writer.add_summary(train_stats_global, 0) # global stats are not tied to a particular timestep, so we simulate this by always plotting at t=0
+        iteration_value = self.to_tf_values({
             "training_iteration": result[TRAINING_ITERATION]
-        }, ["ray", "tune"])
+        }, ["ray", "tune"])[0]
         iteration_stats = tf.Summary(value=iteration_value)
         self._file_writer.add_summary(iteration_stats, t)
         self._file_writer.flush()

@@ -103,7 +103,7 @@ def run(args, parser):
             parser.error("the following arguments are required: --env")
 
     ray.init(
-        redis_address=args.redis_address,
+#        redis_address=args.redis_address,
         num_cpus=args.ray_num_cpus,
         num_gpus=args.ray_num_gpus)
     run_experiments(

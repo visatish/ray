@@ -32,7 +32,7 @@ DEFAULT_CONFIG = with_common_config({
     "train_batch_size": 500,
     "min_iter_time_s": 10,
     "gpu": True,
-    "num_workers": 2,
+    "num_workers": 20,
     "num_cpus_per_worker": 1,
     "num_gpus_per_worker": 0,
 

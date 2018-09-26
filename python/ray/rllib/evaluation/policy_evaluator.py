@@ -5,6 +5,7 @@ from __future__ import print_function
 import gym
 import pickle
 import tensorflow as tf
+import numpy as np
 
 import ray
 from ray.rllib.models import ModelCatalog
@@ -23,7 +24,7 @@ from ray.rllib.utils.filter import get_filter
 from ray.rllib.evaluation.policy_graph import PolicyGraph
 from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph
 from ray.rllib.utils.tf_run_builder import TFRunBuilder
-
+from ray.rllib.evaluation.sample_batch import SampleBatch
 
 class PolicyEvaluator(EvaluatorInterface):
     """Common ``PolicyEvaluator`` implementation that wraps a ``PolicyGraph``.
@@ -279,6 +280,10 @@ class PolicyEvaluator(EvaluatorInterface):
                 pack=pack_episodes,
                 tf_sess=self.tf_sess)
 
+        self.policy_timestamp_dict = {}
+        for policy_id in self.policy_map.keys():
+            self.policy_timestamp_dict[policy_id] = -1 # -1 will be ignored in sample lag calculations because there might be some initialization between when the first policy is sent out from the learner and when the first batch is consumed form the learner
+
     def _build_policy_map(self, policy_dict, policy_config):
         policy_map = {}
         for name, (cls, obs_space, act_space,
@@ -321,6 +326,9 @@ class PolicyEvaluator(EvaluatorInterface):
             else:
                 batch["obs"] = [pack(o) for o in batch["obs"]]
                 batch["new_obs"] = [pack(o) for o in batch["new_obs"]]
+
+        if isinstance(batch, SampleBatch): #TODO: Handle MultiAgentBatch
+            batch['policy_timestamp'] = np.repeat(self.policy_timestamp_dict['default'], batch.count) #TODO: Correctly handle policy id
 
         return batch
 
@@ -387,6 +395,9 @@ class PolicyEvaluator(EvaluatorInterface):
     def set_weights(self, weights):
         for pid, w in weights.items():
             self.policy_map[pid].set_weights(w)
+
+    def set_policy_timestamp(self, policy_id, timestamp):
+        self.policy_timestamp_dict[policy_id] = timestamp
 
     def compute_gradients(self, samples):
         if isinstance(samples, MultiAgentBatch):

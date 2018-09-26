@@ -14,11 +14,18 @@ import time
 import uuid
 
 import ray
-from ray.tune.logger import UnifiedLogger
+from ray.tune.logger import UnifiedLogger, LoggerStat
 from ray.tune.result import (DEFAULT_RESULTS_DIR, TIME_THIS_ITER_S,
                              TIMESTEPS_THIS_ITER, DONE, TIMESTEPS_TOTAL)
 from ray.tune.trial import Resources
 
+def unpack_result_dict(result):
+    if not isinstance(result, (dict, LoggerStat)):
+        return result
+    elif isinstance(result, LoggerStat):
+        return result.value
+    else:
+        return {key: unpack_result_dict(val) for key, val in result.items()}
 
 class Trainable(object):
     """Abstract class for trainable models, functions, etc.
@@ -181,6 +188,8 @@ class Trainable(object):
             time_since_restore=self._time_since_restore,
             timesteps_since_restore=self._timesteps_since_restore,
             iterations_since_restore=self._iterations_since_restore)
+
+        result = unpack_result_dict(result) # unpack any LoggerStat objects so the raw result can be logger/printed
 
         self._result_logger.on_result(result)
 

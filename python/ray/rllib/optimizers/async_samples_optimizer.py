@@ -9,15 +9,16 @@ from __future__ import print_function
 import sys
 import time
 import threading
-import pdb
-
 from six.moves import queue
+
+import numpy as np
 
 import ray
 from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
 from ray.rllib.utils.actors import TaskPool
 from ray.rllib.utils.timer import TimerStat
 from ray.rllib.utils.window_stat import WindowStat
+from ray.tune.logger import LoggerStat, GLOBAL_HISTO
 
 import IPython as ip
 
@@ -85,7 +86,7 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         self.timers = {
             k: TimerStat()
             for k in
-            ["put_weights", "enqueue", "sample_processing", "train", "sample"]
+            ["put_weights", "enqueue", "sample_processing", "train", "sample", "sample_lag"]
         }
         self.num_weight_syncs = 0
         self.learning_started = False
@@ -99,6 +100,7 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
                 self.sample_tasks.add(ev, ev.sample.remote())
 
         self.batch_buffer = []
+        self.policy_ver_release_times = {}
 
     def step(self):
         assert self.learner.is_alive()
@@ -116,14 +118,16 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         self.num_steps_trained += train_timesteps
 
     def _step(self):
-#        pdb.set_trace()
-        sys.exit(0)
         sample_timesteps, train_timesteps = 0, 0
         weights = None
 
         with self.timers["sample_processing"]:
-            for ev, sample_batch in self.sample_tasks.completed_prefetch():
+            tasks = self.sample_tasks.completed_prefetch()
+            for ev, sample_batch in tasks:
                 sample_batch = ray.get(sample_batch)
+                if sample_batch["policy_timestamp"][0] != -1: # ignore the first batch(denoted with -1) in sample lag calculations because there might be some initialization between when the first policy is sent out from the learner and when the first batch is consumed from the learner
+                    sample_lag = time.time() - sample_batch["policy_timestamp"][0]
+                    self.timers["sample_lag"].push(sample_lag)
                 sample_timesteps += sample_batch.count
                 self.batch_buffer.append(sample_batch)
                 if sum(b.count
@@ -140,6 +144,7 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
                     self.learner.weights_updated = False
                     with self.timers["put_weights"]:
                         weights = ray.put(self.local_evaluator.get_weights())
+                ev.set_policy_timestamp.remote("default", time.time()) #TODO: use the actual policy name that this learner is learning
                 ev.set_weights.remote(weights)
                 self.num_weight_syncs += 1
 
@@ -162,15 +167,16 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         timing["learner_dequeue_time_ms"] = round(
             1000 * self.learner.queue_timer.mean, 3)
         stats = {
-            "sample_throughput": round(self.timers["sample"].mean_throughput,
-                                       3),
-            "train_throughput": round(self.timers["train"].mean_throughput, 3),
-            "num_weight_syncs": self.num_weight_syncs,
+            "sample_throughput": LoggerStat(round(self.timers["sample"].mean_throughput,
+                                       3)),
+            "train_throughput": LoggerStat(round(self.timers["train"].mean_throughput, 3)),
+            "num_weight_syncs": LoggerStat(self.num_weight_syncs),
+            "sample_lag_mean": LoggerStat(timing["sample_lag_time_ms"], plot_type=GLOBAL_HISTO)
         }
         debug_stats = {
-            "timing_breakdown": timing,
-            "pending_sample_tasks": self.sample_tasks.count,
-            "learner_queue": self.learner.learner_queue_size.stats(),
+            "timing_breakdown": LoggerStat(timing),
+            "pending_sample_tasks": LoggerStat(self.sample_tasks.count),
+            "learner_queue": LoggerStat(self.learner.learner_queue_size.stats()),
         }
         if self.debug:
             stats.update(debug_stats)
