@@ -7,39 +7,16 @@ import json
 import numpy as np
 import os
 import yaml
-from collections import defaultdict
 
 from ray.tune.log_sync import get_syncer
 from ray.tune.result import NODE_IP, TRAINING_ITERATION, TIME_TOTAL_S, \
     TIMESTEPS_TOTAL
-
-import IPython as ip
 
 try:
     import tensorflow as tf
 except ImportError:
     tf = None
     print("Couldn't import TensorFlow - this disables TensorBoard logging.")
-
-#LINE = "line"
-#HISTO = "histo"
-#GLOBAL_HISTO = "global_histo"
-
-#class LoggerStat(object):
-#    """Wrapper class for metric stats to be logged"""
-#
-#    def __init__(self, value, plot_type=LINE):
-#        self._value = value
-#        self._plot_type = plot_type
-#        assert self._plot_type in [LINE, HISTO, GLOBAL_HISTO], "Plot type '{}' not recognized".format(self._plot_type)
-#
-#    @property
-#    def value(self):
-#        return self._value
-#
-#    @property
-#    def plot_type(self):
-#        return self._plot_type
 
 class Logger(object):
     """Logging interface for ray.tune; specialized implementations follow.

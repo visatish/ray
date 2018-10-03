@@ -6,7 +6,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys
 import time
 import threading
 from six.moves import queue
@@ -18,8 +17,6 @@ from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
 from ray.rllib.utils.actors import TaskPool
 from ray.rllib.utils.timer import TimerStat
 from ray.rllib.utils.window_stat import WindowStat
-
-import IPython as ip
 
 SAMPLE_QUEUE_DEPTH = 2
 LEARNER_QUEUE_MAX_SIZE = 16
@@ -121,8 +118,7 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         weights = None
 
         with self.timers["sample_processing"]:
-            tasks = self.sample_tasks.completed_prefetch()
-            for ev, sample_batch in tasks:
+            for ev, sample_batch in self.sample_tasks.completed_prefetch():
                 sample_batch = ray.get(sample_batch)
                 if sample_batch["policy_timestamp"][0] != -1: # ignore the first batch(denoted with -1) in sample lag calculations because there might be some initialization between when the first policy is sent out from the learner and when the first batch is consumed from the learner
                     sample_lag = time.time() - sample_batch["policy_timestamp"][0]
