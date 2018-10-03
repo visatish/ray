@@ -173,7 +173,7 @@ class Trial(object):
                     str(self)[:MAX_LEN_IDENTIFIER], date_str()),
                 dir=self.local_dir)
             self.result_logger = UnifiedLogger(self.config, self.logdir,
-                                               self.upload_dir)
+                                               self.upload_dir, tf_histogram_keys=["sample_lag_mean"]) #TODO: This is just a hack for testing
 
     def close_logger(self):
         """Close logger."""

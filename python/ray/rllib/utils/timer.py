@@ -49,6 +49,10 @@ class TimerStat(object):
             self._units_processed.pop(0)
 
     @property
+    def samples(self):
+        return self._samples
+
+    @property
     def mean(self):
         return np.mean(self._samples)
 

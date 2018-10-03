@@ -21,25 +21,25 @@ except ImportError:
     tf = None
     print("Couldn't import TensorFlow - this disables TensorBoard logging.")
 
-LINE = "line"
-HISTO = "histo"
-GLOBAL_HISTO = "global_histo"
+#LINE = "line"
+#HISTO = "histo"
+#GLOBAL_HISTO = "global_histo"
 
-class LoggerStat(object):
-    """Wrapper class for metric stats to be logged"""
-
-    def __init__(self, value, plot_type=LINE):
-        self._value = value
-        self._plot_type = plot_type
-        assert self._plot_type in [LINE, HISTO, GLOBAL_HISTO], "Plot type '{}' not recognized".format(self._plot_type)
-
-    @property
-    def value(self):
-        return self._value
-
-    @property
-    def plot_type(self):
-        return self._plot_type
+#class LoggerStat(object):
+#    """Wrapper class for metric stats to be logged"""
+#
+#    def __init__(self, value, plot_type=LINE):
+#        self._value = value
+#        self._plot_type = plot_type
+#        assert self._plot_type in [LINE, HISTO, GLOBAL_HISTO], "Plot type '{}' not recognized".format(self._plot_type)
+#
+#    @property
+#    def value(self):
+#        return self._value
+#
+#    @property
+#    def plot_type(self):
+#        return self._plot_type
 
 class Logger(object):
     """Logging interface for ray.tune; specialized implementations follow.
@@ -48,10 +48,11 @@ class Logger(object):
     multiple formats (TensorBoard, rllab/viskit, plain json) at once.
     """
 
-    def __init__(self, config, logdir, upload_uri=None):
+    def __init__(self, config, logdir, upload_uri=None, tf_histogram_keys=[]):
         self.config = config
         self.logdir = logdir
         self.uri = upload_uri
+        self.tf_histogram_keys = tf_histogram_keys
         self._init()
 
     def _init(self):
@@ -72,7 +73,6 @@ class Logger(object):
 
         pass
 
-
 class UnifiedLogger(Logger):
     """Unified result logger for TensorBoard, rllab/viskit, plain json.
 
@@ -81,10 +81,14 @@ class UnifiedLogger(Logger):
     def _init(self):
         self._loggers = []
         for cls in [_JsonLogger, _TFLogger, _VisKitLogger]:
-            if cls is _TFLogger and tf is None:
-                print("TF not installed - cannot log with {}...".format(cls))
-                continue
-            self._loggers.append(cls(self.config, self.logdir, self.uri))
+            if cls is _TFLogger:
+                if tf is None:
+                    print("TF not installed - cannot log with {}...".format(cls))
+                    continue
+                else:
+                    self._loggers.append(cls(self.config, self.logdir, self.uri, tf_histogram_keys=self.tf_histogram_keys))
+            else:
+                self._loggers.append(cls(self.config, self.logdir, self.uri))
         self._log_syncer = get_syncer(self.logdir, self.uri)
 
     def on_result(self, result):
@@ -158,29 +162,19 @@ def build_histogram(values, bins=1000):
 class _TFLogger(Logger):
     def _init(self):
         self._file_writer = tf.summary.FileWriter(self.logdir)
-        self._global_histograms = defaultdict(list)
 
     def to_tf_values(self, result, path):
         values = []
-        global_values = []
         for attr, value in result.items():
             if value is not None:
-                if isinstance(value, LoggerStat):
-                    if value.plot_type == LINE:
-                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value.value))
-                    elif value.plot_type == HISTO:
-                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), histo=build_histogram(np.array(value.value))))
-                    elif value.plot_type == GLOBAL_HISTO: 
-                        tag = "/".join(path + [attr])
-                        self._global_histograms[tag].append(value.value)
-                        global_values.append(tf.Summary.Value(tag=tag, histo=build_histogram(np.array(self._global_histograms[tag]))))                          
+                if isinstance(value, (int, float, np.float32, np.float64, np.int32, list)):
+                    if attr in self.tf_histogram_keys:
+                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), histo=build_histogram(np.array(value))))
+                    else:
+                        values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value))
                 elif isinstance(value, dict):
-                    v, gv = self.to_tf_values(value, path + [attr])
-                    values.extend(v)
-                    global_values.extend(gv)
-                elif isinstance(value, (int, float, np.float32, np.float64, np.int32)): #TODO: Refactor codebase to not need this fallback
-                    values.append(tf.Summary.Value(tag="/".join(path + [attr]), simple_value=value))
-        return values, global_values
+                    values.extend(self.to_tf_values(value, path + [attr]))
+        return values
 
     def on_result(self, result):
         tmp = result.copy()
@@ -188,15 +182,13 @@ class _TFLogger(Logger):
                 "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             del tmp[k]  # not useful to tf log these
-        values, global_values = self.to_tf_values(tmp, ["ray", "tune"])
+        values= self.to_tf_values(tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
-        train_stats_global = tf.Summary(value=global_values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        self._file_writer.add_summary(train_stats_global, 0) # global stats are not tied to a particular timestep, so we simulate this by always plotting at t=0
         iteration_value = self.to_tf_values({
             "training_iteration": result[TRAINING_ITERATION]
-        }, ["ray", "tune"])[0]
+        }, ["ray", "tune"])
         iteration_stats = tf.Summary(value=iteration_value)
         self._file_writer.add_summary(iteration_stats, t)
         self._file_writer.flush()
@@ -241,17 +233,18 @@ class _SafeFallbackEncoder(json.JSONEncoder):
         except Exception:
             return str(value)  # give up, just stringify it (ok for logs)
 
-def unpack_result_dict(result):
-    """Unpack any LoggerStat objects in the result dict."""
-    if not isinstance(result, (dict, LoggerStat)):
+def reduce_mean_result_dict(result):
+    """Sometimes we want to have arrays or lists in the result dict for logging histograms and such,
+but we don't want to print those. Instead we reduce them by the mean."""
+    if isinstance(result, (np.ndarray, list)):
+        return np.mean(result)
+    elif not isinstance(result, dict):
         return result
-    elif isinstance(result, LoggerStat):
-        return result.value
     else:
-        return {key: unpack_result_dict(val) for key, val in result.items()}
+        return {key: reduce_mean_result_dict(val) for key, val in result.items()}
 
 def pretty_print(result):
-    result = unpack_result_dict(result.copy())
+    result = reduce_mean_result_dict(result.copy())
     result.update(config=None)  # drop config from pretty print
     out = {}
     for k, v in result.items():
